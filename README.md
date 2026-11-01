@@ -33,3 +33,15 @@ Additionally, the `$unwind` aggregation stage can expand the array into separate
 **Arrays are particularly useful** for filtering, aggregation, and multikey indexing. They also make the schema more flexible when tracks feature collaborations.
 
 The main limitation is that artist names are stored as text rather than unique artist identifiers. In a larger production system, a separate artist collection with stable IDs could improve consistency and support richer artist metadata.
+
+### Part 3.1 — Compound Index Performance
+
+Before indexing, the query used `COLLSCAN` followed by `SORT`, examining all 113,999 documents and taking 72 ms to return 354 matching tracks.
+
+After creating a compound index on `track_genre`, `popularity`, and `audio_features.danceability`, the execution plan changed to `IXSCAN` followed by `FETCH`. The query examined 412 index keys and only 354 documents, reducing execution time to 2 ms.
+
+The index also eliminated the separate sorting stage by supporting the requested popularity order. Both executions returned the same 354 documents.
+
+This represents approximately a 36× speedup in the measured run. However, the query is not covered because the execution plan still includes `FETCH`.
+
+The results demonstrate how a compound index can substantially reduce document scanning and sorting overhead for selective analytical queries.
