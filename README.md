@@ -1,79 +1,175 @@
-## Part 1 — Data Modeling: Theoretical Questions
+# Spotify Analytics — MongoDB
 
-### 1. Why are audio features stored in a nested `audio_features` object instead of a flat document? When is embedding beneficial, and when can it cause problems?
+A NoSQL analytics project built with **MongoDB Atlas**, **Python**, and **MongoDB Aggregation Framework**. The project demonstrates CSV ingestion, document-oriented data modeling, analytical queries, and index optimization using a Spotify tracks dataset.
 
-Audio characteristics such as `danceability`, `energy`, `tempo`, `loudness`, and `valence` are grouped into a nested `audio_features` object because they describe the same logical component of a track.
+## 1. Dataset & Project Structure
 
-This structure makes the document easier to understand and maintain. It also allows applications to retrieve all audio characteristics together or access specific features using dot notation, for example, `audio_features.energy`.
+**Dataset:** [Spotify Tracks Dataset — Kaggle](https://www.kaggle.com/datasets/maharshipandya/-spotify-tracks-dataset)
 
-**Embedding is beneficial** when related attributes are frequently accessed together, belong to the same track, and can be updated as part of one document. In our Spotify dataset, audio features naturally belong to an individual track, making embedding a suitable design choice.
+- Original records: **114,000**
+- Valid imported records: **113,999**
+- Database: `spotify`
+- Collections: `tracks_raw` (original data) and `tracks` (transformed data)
 
-However, embedding can become problematic when nested data grows significantly, is shared across many documents, or needs independent updates. Large documents may increase storage and update costs, while deeply nested structures can make queries and indexes more complex.
-
-In this project, the `audio_features` object has a small, predictable structure, so the advantages of embedding outweigh its limitations.
-
-### 2. Why are artists stored as an array instead of a string? Which queries become easier?
-
-In the original Spotify dataset, artists are stored as a semicolon-separated string, such as `"Artist A;Artist B"`. During the MongoDB transformation, this string is converted into an array:
-
-```javascript
-artists: ["Artist A", "Artist B"]
+```text
+Zhyhalo_nosql_1/
+├── scripts/
+│   ├── 01_load_data.py
+│   └── 02_transform.js
+├── queries/
+│   ├── part2_queries.js
+│   └── part3_indexes.js
+├── requirements.txt
+├── .gitignore
+└── README.md
 ```
 
-An array represents the relationship more accurately because a track can have multiple artists.
+The CSV file and database credentials are excluded from version control.
 
-It also simplifies querying. For example, MongoDB can find tracks featuring a specific artist without manually splitting strings:
+## 2. Setup & Execution
+
+**Requirements:** Python, MongoDB Shell (`mongosh`), and a MongoDB Atlas cluster.
+
+1. Clone the repository and install Python dependencies:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+
+2. Download the Spotify dataset from Kaggle and place it in the project root as `dataset.csv`.
+
+3. Create a `.env` file containing the MongoDB Atlas connection string:
+
+   ```dotenv
+   MONGO_URI=mongodb+srv://<username>:<password>@<cluster-host>/
+   ```
+
+4. Import the dataset:
+
+   ```powershell
+   python scripts/01_load_data.py
+   ```
+
+5. Connect to MongoDB Atlas using `mongosh`, then execute:
+
+   ```javascript
+   load("scripts/02_transform.js")
+   load("queries/part2_queries.js")
+   load("queries/part3_indexes.js")
+   ```
+
+The transformation creates the `spotify.tracks` collection.
+
+## 3. Data Modeling
+
+The raw dataset is transformed into a document-oriented schema with nested audio features, artist arrays, and calculated attributes.
+
+**Example document (simplified):**
 
 ```javascript
-db.tracks.find({ artists: "Artist A" })
+{
+  track_name: "Comedy",
+  artists: ["Gen Hoshino"],
+  popularity: 73,
+  duration_ms: 230666,
+  duration_sec: 230.7,
+  popularity_tier: "high",
+  track_genre: "acoustic",
+  audio_features: {
+    danceability: 0.676,
+    energy: 0.461,
+    tempo: 87.917
+  }
+}
 ```
 
-Additionally, the `$unwind` aggregation stage can expand the array into separate records for each artist. This makes it easier to calculate the number of tracks per artist, average popularity, and identify artists whose tracks consistently achieve high popularity.
+Popularity tiers are calculated as `high` (≥70), `medium` (40–69), and `low` (below 40).
 
-**Arrays are particularly useful** for filtering, aggregation, and multikey indexing. They also make the schema more flexible when tracks feature collaborations.
+### Why embed `audio_features`?
 
-The main limitation is that artist names are stored as text rather than unique artist identifiers. In a larger production system, a separate artist collection with stable IDs could improve consistency and support richer artist metadata.
+Audio characteristics belong to the same track and are frequently used together. Embedding provides a logical structure, supports dot-notation queries, and allows related fields to be read and updated within one document.
 
-### Part 3.1 — Compound Index Performance
+Embedding is less suitable for large, frequently changing, or shared data because it may increase duplication, document size, and maintenance overhead.
 
-Before indexing, the query used `COLLSCAN` followed by `SORT`, examining all 113,999 documents and taking 72 ms to return 354 matching tracks.
+### Why store `artists` as an array?
 
-After creating a compound index on `track_genre`, `popularity`, and `audio_features.danceability`, the execution plan changed to `IXSCAN` followed by `FETCH`. The query examined 412 index keys and only 354 documents, reducing execution time to 2 ms.
+A track may feature multiple performers. Arrays allow direct filtering by artist and simplify per-artist aggregations using `$unwind`.
 
-The index also eliminated the separate sorting stage by supporting the requested popularity order. Both executions returned the same 354 documents.
+```javascript
+db.tracks.find({ artists: "Gen Hoshino" })
+```
 
-This represents approximately a 36× speedup in the measured run. However, the query is not covered because the execution plan still includes `FETCH`.
+A limitation is that artist names are not stable identifiers. Larger systems may benefit from a separate artist collection.
 
-The results demonstrate how a compound index can substantially reduce document scanning and sorting overhead for selective analytical queries.
+## 4. Analytical Queries — Part 2
 
-### Part 3.2 — Background Music Index Optimization
+Four queries are implemented in `queries/part2_queries.js`.
 
-A compound index was created on `explicit`, `audio_features.instrumentalness`, and `audio_features.speechiness` to optimize background music filtering.
+| Query | Purpose | Main techniques |
+|---|---|---|
+| Party Tracks | Find danceable, energetic tracks lasting 3–5 minutes | Nested-field filtering, range conditions |
+| Popular Artists | Find the top 20 artists with at least 3 tracks and minimum track popularity of 60 | `$unwind`, `$group`, `$min`, `$avg` |
+| Unusual Tempo | Identify tracks exceeding their genre's mean tempo by more than two population standard deviations | `$stdDevPop`, `$lookup`, `$group` |
+| Background Work | Find non-explicit tracks with low loudness and speechiness and high instrumentalness | Compound filtering |
 
-Without using the index, MongoDB performed a `COLLSCAN`, examining all 113,999 documents and taking 123 ms.
+**Observations:** The artist query evaluates minimum popularity across an artist's records, rather than filtering out unpopular tracks before grouping. The tempo query uses genre-specific statistical thresholds, so an outlier is identified relative to its genre.
 
-With the index, the execution plan changed to `IXSCAN → FETCH`. MongoDB examined 16,602 index keys and 16,141 documents, with execution time reduced to 38 ms.
+The dataset may contain the same track in multiple genres; analytical counts are based on collection records unless explicitly deduplicated.
 
-Both executions returned the same 16,141 matching documents. This represents an approximately 3.24× improvement in execution time and an 86% reduction in documents examined.
+## 5. Index Optimization — Part 3 (Bonus)
 
-The results demonstrate that compound indexes can significantly improve filtering performance. However, the query still requires `FETCH` because the requested fields are not fully covered by the index.
+Index performance was evaluated using `explain("executionStats")`.
 
-*Note: This experiment uses a three-condition filter without the `loudness` condition from the original background music query.*
+### 5.1 Genre & Popularity Index
 
-### Part 3.3 — Covered Query
+Compound index: `track_genre`, `popularity`, `audio_features.danceability`.
 
-A covered query was tested using the `idx_background_music` compound index.
+| Metric | Without index | With index |
+|---|---:|---:|
+| Execution plan | `COLLSCAN + SORT` | `IXSCAN + FETCH` |
+| Execution time | 72 ms | 2 ms |
+| Documents examined | 113,999 | 354 |
+| Keys examined | 0 | 412 |
+| Documents returned | 354 | 354 |
 
-The query filtered tracks by `explicit = false` and `instrumentalness > 0.5`, returning only indexed fields while excluding `_id`.
+**Result:** Approximately **36× faster** in the measured run, with no separate sorting stage.
 
-The execution statistics showed:
+### 5.2 Background Music Index
 
-- Documents returned: 18,382
-- Execution time: 39 ms
-- Documents examined: 0
-- Index keys examined: 18,382
-- Execution plan: `PROJECTION_DEFAULT → IXSCAN`
+Compound index: `explicit`, `audio_features.instrumentalness`, `audio_features.speechiness`.
 
-The query was fully covered by the index because MongoDB retrieved the required information directly from index entries without fetching full documents.
+| Metric | Without index | With index |
+|---|---:|---:|
+| Execution plan | `COLLSCAN` | `IXSCAN + FETCH` |
+| Execution time | 123 ms | 38 ms |
+| Documents examined | 113,999 | 16,141 |
+| Keys examined | 0 | 16,602 |
+| Documents returned | 16,141 | 16,141 |
 
-This demonstrates that carefully designed projections and indexes can eliminate document reads and reduce database I/O.
+**Result:** Approximately **3.24× faster**, with 86% fewer documents examined.
+
+This benchmark uses three conditions, excluding the `loudness` condition from the full background-work query.
+
+### 5.3 Covered Query
+
+A covered query was tested using the background music index, filtering and projecting only indexed fields.
+
+| Metric | Result |
+|---|---|
+| Execution plan | `PROJECTION_DEFAULT → IXSCAN` |
+| Execution time | 39 ms |
+| Documents returned | 18,382 |
+| Documents examined | **0** |
+| Keys examined | 18,382 |
+
+The query was covered because MongoDB retrieved the requested fields directly from the index without fetching full documents.
+
+*Execution times reflect individual measurements and may vary with caching and database load.*
+
+## 6. Conclusion
+
+The project demonstrates how MongoDB supports document-oriented data modeling and analytical processing through nested objects, arrays, aggregation pipelines, and compound indexes.
+
+The transformation preserved **113,999 valid tracks**, and the indexing experiments demonstrated substantial reductions in document scans and execution time. These results highlight the importance of designing MongoDB schemas and indexes around practical query patterns.
