@@ -45,3 +45,35 @@ The index also eliminated the separate sorting stage by supporting the requested
 This represents approximately a 36× speedup in the measured run. However, the query is not covered because the execution plan still includes `FETCH`.
 
 The results demonstrate how a compound index can substantially reduce document scanning and sorting overhead for selective analytical queries.
+
+### Part 3.2 — Background Music Index Optimization
+
+A compound index was created on `explicit`, `audio_features.instrumentalness`, and `audio_features.speechiness` to optimize background music filtering.
+
+Without using the index, MongoDB performed a `COLLSCAN`, examining all 113,999 documents and taking 123 ms.
+
+With the index, the execution plan changed to `IXSCAN → FETCH`. MongoDB examined 16,602 index keys and 16,141 documents, with execution time reduced to 38 ms.
+
+Both executions returned the same 16,141 matching documents. This represents an approximately 3.24× improvement in execution time and an 86% reduction in documents examined.
+
+The results demonstrate that compound indexes can significantly improve filtering performance. However, the query still requires `FETCH` because the requested fields are not fully covered by the index.
+
+*Note: This experiment uses a three-condition filter without the `loudness` condition from the original background music query.*
+
+### Part 3.3 — Covered Query
+
+A covered query was tested using the `idx_background_music` compound index.
+
+The query filtered tracks by `explicit = false` and `instrumentalness > 0.5`, returning only indexed fields while excluding `_id`.
+
+The execution statistics showed:
+
+- Documents returned: 18,382
+- Execution time: 39 ms
+- Documents examined: 0
+- Index keys examined: 18,382
+- Execution plan: `PROJECTION_DEFAULT → IXSCAN`
+
+The query was fully covered by the index because MongoDB retrieved the required information directly from index entries without fetching full documents.
+
+This demonstrates that carefully designed projections and indexes can eliminate document reads and reduce database I/O.
